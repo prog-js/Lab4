@@ -1,6 +1,7 @@
 """
 Kafka Consumer для приёма результатов работы модели.
 Читает сообщения из топика model-results и пишет в таблицу kafka_messages.
+Конфигурация (БД + Kafka) берётся из Vault.
 """
 import json
 import logging
@@ -15,6 +16,8 @@ from kafka.errors import KafkaError, NoBrokersAvailable
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+from vault_client import VaultClient
+
 # --- Логирование ---
 logging.basicConfig(
     level=logging.INFO,
@@ -22,19 +25,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger("kafka-consumer")
 
-# --- Конфигурация из окружения ---
-KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
-KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "model-results")
-KAFKA_GROUP_ID = os.getenv("KAFKA_GROUP_ID", "model-results-consumer")
+# --- Получаем секреты из Vault ---
+logger.info("Reading secrets from Vault...")
+vault = VaultClient(
+    vault_file=os.getenv("VAULT_FILE", "vault/secrets.enc"),
+    password_file=os.getenv("VAULT_PASSWORD_FILE", "/nonexistent"),
+)
 
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_NAME = os.getenv("DB_NAME")
-DB_HOST = os.getenv("DB_HOST", "postgres")
-DB_PORT = os.getenv("DB_PORT", "5432")
+db_config = vault.get_db_config()
+DB_USER = db_config["user"]
+DB_PASSWORD = db_config["password"]
+DB_NAME = db_config["name"]
+DB_HOST = db_config["host"]
+DB_PORT = db_config["port"]
+
+kafka_config = vault.get_secret("kafka") or {}
+KAFKA_BOOTSTRAP = kafka_config.get("bootstrap_servers", "kafka:29092")
+KAFKA_TOPIC = kafka_config.get("topic", "model-results")
+KAFKA_GROUP_ID = kafka_config.get("group_id", "model-results-consumer")
 
 DB_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
+logger.info(f"DB config loaded: {DB_HOST}:{DB_PORT}/{DB_NAME} (user={DB_USER})")
+logger.info(f"Kafka config loaded: {KAFKA_BOOTSTRAP}, topic={KAFKA_TOPIC}")
 # --- SQLAlchemy модель ---
 Base = declarative_base()
 
