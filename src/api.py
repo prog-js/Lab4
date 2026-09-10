@@ -10,6 +10,11 @@ from datetime import datetime, timedelta
 from src.db import get_db, Prediction, ModelMetric, init_db
 from src.analytics import GraduateAnalytics
 
+from src.kafka_producer import get_producer
+
+import logging
+logger = logging.getLogger(__name__)
+
 # Секретный ключ для JWT (из переменных окружения)
 SECRET_KEY = os.environ.get('API_SECRET_KEY', 'fallback-key-change-me')
 ALGORITHM = "HS256"
@@ -69,16 +74,12 @@ def predict(
     db: Session = Depends(get_db),
     user_id: str = Depends(verify_token)
 ):
-    """
-    Предсказание с сохранением результата в PostgreSQL.
-    Требуется JWT токен в заголовке Authorization: Bearer <token>
-    """
-    # Здесь ваша логика предсказания (заглушка)
+    """..."""
     import random
     prediction = random.randint(0, 2)
     confidence = random.random()
     class_names = {0: "setosa", 1: "versicolor", 2: "virginica"}
-    
+
     # Сохранение в БД
     db_prediction = Prediction(
         input_features=request.features,
@@ -88,10 +89,29 @@ def predict(
     )
     db.add(db_prediction)
     db.commit()
-    
+    db.refresh(db_prediction)  # ← получить id после commit
+
+    class_name = class_names.get(prediction, "unknown")
+
+    # Отправка результата в Kafka
+    try:
+        producer = get_producer()
+        kafka_payload = {
+            "prediction_id": db_prediction.id,
+            "user_id": user_id,
+            "input_features": request.features,
+            "prediction": prediction,
+            "class_name": class_name,
+            "confidence": confidence,
+        }
+        producer.send_result(kafka_payload, key=str(db_prediction.id))
+    except Exception as e:
+        # Kafka не должна ломать основной флоу
+        logger.error(f"Kafka sending failed: {e}")
+
     return PredictionResponse(
         prediction=prediction,
-        class_name=class_names.get(prediction, "unknown"),
+        class_name=class_name,
         confidence=confidence,
         saved_to_db=True
     )
