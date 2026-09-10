@@ -5,7 +5,7 @@ pipeline {
         choice(
             name: 'DEPLOY_ACTION',
             choices: ['deploy', 'none', 'test_only'],
-            description: 'Действие: deploy - развернуть контейнер, test_only - только тесты'
+            description: 'deploy - развернуть всё через compose, test_only - только тесты, none - только сборка'
         )
         string(
             name: 'SCENARIO_FILE',
@@ -15,13 +15,15 @@ pipeline {
     }
 
     environment {
-        IMAGE_NAME = "4ddocker/lab3:${env.BUILD_NUMBER}"
-        IMAGE_LATEST = '4ddocker/lab3:latest'
-        LOCAL_DATA_PATH = 'C:\\DopEdu\\ML_ITMO\\DevOpsLab\\Lab3'
-        VAULT_PASSWORD = credentials('vault-password')
-        DOCKER_HUB_USER = '4ddocker'
-        DOCKER_HUB_PASS = credentials('docker')
-        DOCKER_HUB_CRED = 'docker'
+        API_IMAGE_NAME        = "4ddocker/lab4-api:${env.BUILD_NUMBER}"
+        API_IMAGE_LATEST      = '4ddocker/lab4-api:latest'
+        CONSUMER_IMAGE_NAME   = "4ddocker/lab4-consumer:${env.BUILD_NUMBER}"
+        CONSUMER_IMAGE_LATEST = '4ddocker/lab4-consumer:latest'
+        LOCAL_DATA_PATH       = 'C:\\DopEdu\\ML_ITMO\\DevOpsLab\\Lab4'
+        VAULT_PASSWORD        = credentials('vault-password')
+        DOCKER_HUB_USER       = '4ddocker'
+        DOCKER_HUB_PASS       = credentials('docker')
+        DOCKER_HUB_CRED       = 'docker'
     }
 
     stages {
@@ -30,28 +32,6 @@ pipeline {
                 echo '📦 Клонирование репозитория из GitHub...'
                 checkout scm
                 echo '✅ Код успешно получен'
-            }
-        }
-
-        stage('Create Network') {
-            steps {
-                bat 'docker network inspect my_network >nul 2>&1 || docker network create my_network'
-            }
-        }
-
-        stage('Start PostgreSQL') {
-            steps {
-                echo '🐘 Запуск PostgreSQL...'
-                bat '''
-                    docker stop postgres || true
-                    docker rm postgres || true
-                    docker run -d --name postgres --network my_network \
-                        -e POSTGRES_USER=ml_user \
-                        -e POSTGRES_PASSWORD=StrongPassword123! \
-                        -e POSTGRES_DB=ml_models \
-                        postgres:15
-                '''
-                echo '✅ PostgreSQL запущен'
             }
         }
 
@@ -68,97 +48,84 @@ pipeline {
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Build Docker Images') {
             steps {
-                echo '🏗️ Сборка Docker образа...'
-                bat "docker build -t ${IMAGE_NAME} ."
-                bat "docker tag ${IMAGE_NAME} ${IMAGE_LATEST}"
-                echo '✅ Образ собран'
-            }
-        }
-
-        stage('Functional Tests') {
-            when {
-                expression { params.DEPLOY_ACTION == 'test_only' || params.DEPLOY_ACTION == 'deploy' }
-            }
-            steps {
-                echo '🧪 Функциональное тестирование по сценарию...'
-                bat """
-                    docker stop test-func-${env.BUILD_NUMBER} || true
-                    docker rm test-func-${env.BUILD_NUMBER} || true
-                    docker run -d --name test-func-${env.BUILD_NUMBER} -p 8889:8000 --network my_network \
-                        -e VAULT_PASSWORD=${VAULT_PASSWORD} \
-                        -e DB_HOST=postgres \
-                        -e DB_PORT=5432 \
-                        -e DB_USER=ml_user \
-                        -e DB_PASSWORD=StrongPassword123! \
-                        -e DB_NAME=ml_models \
-                        ${IMAGE_NAME}
-                    timeout /t 15 /nobreak > nul
-                    curl.exe -f http://localhost:8889/health
-                    docker stop test-func-${env.BUILD_NUMBER}
-                    docker rm test-func-${env.BUILD_NUMBER}
-                """
-                echo '✅ Функциональные тесты пройдены'
+                echo '🏗️ Сборка Docker образов (API + Consumer)...'
+                bat "docker build -t ${API_IMAGE_NAME} -f Dockerfile ."
+                bat "docker tag ${API_IMAGE_NAME} ${API_IMAGE_LATEST}"
+                bat "docker build -t ${CONSUMER_IMAGE_NAME} -f consumer/Dockerfile ."
+                bat "docker tag ${CONSUMER_IMAGE_NAME} ${CONSUMER_IMAGE_LATEST}"
+                echo '✅ Образы собраны'
             }
         }
 
         stage('Push to Docker Hub') {
-            when {
-                expression { params.DEPLOY_ACTION == 'deploy' }
-            }
+            when { expression { params.DEPLOY_ACTION == 'deploy' } }
             steps {
                 script {
                     docker.withRegistry('', DOCKER_HUB_CRED) {
-                        docker.image("4ddocker/lab3:${env.BUILD_NUMBER}").push()
-                        docker.image("4ddocker/lab3:latest").push()
+                        docker.image("4ddocker/lab4-api:${env.BUILD_NUMBER}").push()
+                        docker.image("4ddocker/lab4-api:latest").push()
+                        docker.image("4ddocker/lab4-consumer:${env.BUILD_NUMBER}").push()
+                        docker.image("4ddocker/lab4-consumer:latest").push()
                     }
                 }
-                echo '✅ Образ опубликован на Docker Hub'
+                echo '✅ Образы опубликованы на Docker Hub'
             }
         }
 
-        stage('Deploy Container') {
-            when {
-                expression { params.DEPLOY_ACTION == 'deploy' }
-            }
+        stage('Deploy with docker-compose') {
+            when { expression { params.DEPLOY_ACTION == 'deploy' || params.DEPLOY_ACTION == 'test_only' } }
             steps {
-                echo '🚀 Развертывание контейнера в продакшн...'
-                bat """
-                    docker stop lab3-api || true
-                    docker rm lab3-api || true
-                    docker run -d --name lab3-api -p 8000:8000 --restart unless-stopped --network my_network \
-                        -e VAULT_PASSWORD=${VAULT_PASSWORD} \
-                        -e DB_HOST=postgres \
-                        -e DB_PORT=5432 \
-                        -e DB_USER=ml_user \
-                        -e DB_PASSWORD=StrongPassword123! \
-                        -e DB_NAME=ml_models \
-                        ${IMAGE_LATEST}
-                """
-                echo '✅ Контейнер развернут'
-            }
-        }
-
-        stage('Health Check') {
-            when {
-                expression { params.DEPLOY_ACTION == 'deploy' }
-            }
-            steps {
+                echo '🚀 Развёртывание через docker-compose...'
+                bat 'docker-compose down || true'
+                bat 'docker-compose up -d --build'
+                echo '⏳ Ожидание готовности API...'
                 powershell '''
-                    Start-Sleep -Seconds 10
-                    try {
-                        $response = Invoke-WebRequest -Uri "http://localhost:8000/health" -UseBasicParsing
-                        if ($response.StatusCode -eq 200) {
-                            Write-Host "✅ Health check пройден"
-                        } else {
-                            exit 1
+                    $maxWait = 120
+                    $waited = 0
+                    while ($waited -lt $maxWait) {
+                        Start-Sleep -Seconds 5
+                        $waited += 5
+                        $status = docker inspect graduate-analytics --format "{{.State.Health.Status}}" 2>$null
+                        if ($status -eq "healthy") {
+                            Write-Host "✅ API healthy за $waited сек"
+                            exit 0
                         }
-                    } catch {
-                        Write-Host "Ошибка: $_"
-                        exit 1
+                        Write-Host "⏳ Ожидание... ($waited сек), статус: $status"
                     }
+                    Write-Host "❌ API не стал healthy за $maxWait сек"
+                    exit 1
                 '''
+            }
+        }
+
+        stage('Functional Test with Kafka') {
+            when { expression { params.DEPLOY_ACTION == 'deploy' || params.DEPLOY_ACTION == 'test_only' } }
+            steps {
+                echo '🧪 Функциональный тест с проверкой Kafka...'
+                powershell '''
+                    # 1. Токен
+                    $token = (curl.exe -s http://localhost:8000/token | ConvertFrom-Json).access_token
+                    if (-not $token) { Write-Host "❌ Не удалось получить токен"; exit 1 }
+                    Write-Host "✅ Токен получен"
+
+                    # 2. Predict
+                    $body = '{"features": [5.1, 3.5, 1.4, 0.2]}'
+                    $resp = curl.exe -s -X POST http://localhost:8000/predict -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d $body | ConvertFrom-Json
+                    if (-not $resp.prediction) { Write-Host "❌ Predict не вернул prediction"; exit 1 }
+                    Write-Host "✅ Prediction: $($resp.prediction) $($resp.class_name)"
+
+                    # 3. Ждём Consumer
+                    Start-Sleep -Seconds 5
+
+                    # 4. Проверяем kafka_messages
+                    $dbCheck = docker exec graduate-postgres psql -U ml_user -d ml_models -t -c "SELECT COUNT(*) FROM kafka_messages;"
+                    $count = [int]$dbCheck.Trim()
+                    if ($count -lt 1) { Write-Host "❌ kafka_messages пуста — Consumer не записал"; exit 1 }
+                    Write-Host "✅ В kafka_messages $count записей — Consumer работает"
+                '''
+                echo '✅ Функциональный тест пройден'
             }
         }
     }
@@ -166,11 +133,8 @@ pipeline {
     post {
         always {
             script {
-                bat "docker stop test-func-${env.BUILD_NUMBER} 2>nul || exit 0"
-                bat "docker rm test-func-${env.BUILD_NUMBER} 2>nul || exit 0"
-                bat 'docker stop lab3-api 2>nul || exit 0'
-                bat 'docker rm lab3-api 2>nul || exit 0'
-                bat "docker rmi ${IMAGE_NAME} ${IMAGE_LATEST} || true"
+                echo '=== Логи контейнеров (tail) ==='
+                bat 'docker-compose logs --tail 30 || true'
             }
         }
         success {
