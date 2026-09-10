@@ -87,7 +87,28 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-
+  graduate-consumer:
+    build:
+      context: ./consumer
+    container_name: graduate-consumer
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC=model-results
+      - KAFKA_GROUP_ID=model-results-consumer
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - ml_network
+      
 networks:
   ml_network:
     driver: bridge
