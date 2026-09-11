@@ -122,22 +122,38 @@ pipeline {
             if (-not $token) { Write-Host "❌ Не удалось получить токен"; exit 1 }
             Write-Host "✅ Токен получен"
 
-            # 2. Predict через Invoke-RestMethod
+            # 2. Predict через Invoke-RestMethod с полной диагностикой
             $headers = @{
                 "Authorization" = "Bearer $token"
                 "Content-Type" = "application/json"
             }
-            $body = @{ features = @(5.1, 3.5, 1.4, 0.2) } | ConvertTo-Json
+            $body = '{"features": [5.1, 3.5, 1.4, 0.2]}'
             Write-Host "Body: $body"
 
             try {
-                $resp = Invoke-RestMethod -Uri "http://localhost:8000/predict" -Method Post -Headers $headers -Body $body
+                $response = Invoke-WebRequest -Uri "http://localhost:8000/predict" -Method Post -Headers $headers -Body $body -UseBasicParsing
+                Write-Host "HTTP Status: $($response.StatusCode)"
+                Write-Host "Raw Response: $($response.Content)"
+
+                $resp = $response.Content | ConvertFrom-Json
+                Write-Host "Parsed prediction: $($resp.prediction)"
+                Write-Host "Parsed class_name: $($resp.class_name)"
+                Write-Host "Parsed confidence: $($resp.confidence)"
             } catch {
                 Write-Host "❌ Ошибка запроса: $_"
+                Write-Host "Exception type: $($_.Exception.GetType().FullName)"
+                if ($_.Exception.Response) {
+                    Write-Host "HTTP Status: $($_.Exception.Response.StatusCode)"
+                    $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                    Write-Host "Response Body: $($reader.ReadToEnd())"
+                }
                 exit 1
             }
 
-            if (-not $resp.prediction) { Write-Host "❌ Predict не вернул prediction"; exit 1 }
+            if ($null -eq $resp.prediction) {
+                Write-Host "❌ Predict не вернул prediction"
+                exit 1
+            }
             Write-Host "✅ Prediction: $($resp.prediction) $($resp.class_name)"
 
             # 3. Ждём Consumer
