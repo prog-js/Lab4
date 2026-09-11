@@ -39,11 +39,16 @@ pipeline {
             steps {
                 echo '📁 Копирование больших файлов из локальной папки...'
                 bat """
-                    if not exist "data" mkdir data
-                    if exist "${LOCAL_DATA_PATH}\\data\\*.csv" copy "${LOCAL_DATA_PATH}\\data\\*.csv" data\\
-                    if not exist "models" mkdir models
-                    if exist "${LOCAL_DATA_PATH}\\models\\*.pkl" copy "${LOCAL_DATA_PATH}\\models\\*.pkl" models\\
-                """
+            if not exist "data" mkdir data
+            if exist "${LOCAL_DATA_PATH}\\data\\*.csv" copy "${LOCAL_DATA_PATH}\\data\\*.csv" data\\
+            if not exist "models" mkdir models
+            if exist "${LOCAL_DATA_PATH}\\models\\*.pkl" copy "${LOCAL_DATA_PATH}\\models\\*.pkl" models\\
+            if exist "${LOCAL_DATA_PATH}\\.env" copy "${LOCAL_DATA_PATH}\\.env" .env
+            if not exist "vault" mkdir vault
+            if exist "${LOCAL_DATA_PATH}\\vault\\secrets.enc" copy "${LOCAL_DATA_PATH}\\vault\\secrets.enc" vault\\
+            echo === .env содержимое ===
+            type .env
+        """
                 echo '✅ Большие файлы скопированы'
             }
         }
@@ -65,9 +70,9 @@ pipeline {
                 script {
                     docker.withRegistry('', DOCKER_HUB_CRED) {
                         docker.image("4ddocker/lab4-api:${env.BUILD_NUMBER}").push()
-                        docker.image("4ddocker/lab4-api:latest").push()
+                        docker.image('4ddocker/lab4-api:latest').push()
                         docker.image("4ddocker/lab4-consumer:${env.BUILD_NUMBER}").push()
-                        docker.image("4ddocker/lab4-consumer:latest").push()
+                        docker.image('4ddocker/lab4-consumer:latest').push()
                     }
                 }
                 echo '✅ Образы опубликованы на Docker Hub'
@@ -77,29 +82,35 @@ pipeline {
         stage('Deploy with docker-compose') {
             when { expression { params.DEPLOY_ACTION == 'deploy' || params.DEPLOY_ACTION == 'test_only' } }
             steps {
+                echo '🛑 Остановка старых контейнеров...'
+                bat '''
+            docker stop graduate-analytics graduate-consumer graduate-kafka graduate-zookeeper graduate-postgres 2>nul || exit 0
+            docker rm graduate-analytics graduate-consumer graduate-kafka graduate-zookeeper graduate-postgres 2>nul || exit 0
+        '''
+
                 echo '🚀 Развёртывание через docker-compose...'
                 bat 'docker-compose down || true'
                 bat 'docker-compose up -d --build'
+
                 echo '⏳ Ожидание готовности API...'
                 powershell '''
-                    $maxWait = 120
-                    $waited = 0
-                    while ($waited -lt $maxWait) {
-                        Start-Sleep -Seconds 5
-                        $waited += 5
-                        $status = docker inspect graduate-analytics --format "{{.State.Health.Status}}" 2>$null
-                        if ($status -eq "healthy") {
-                            Write-Host "✅ API healthy за $waited сек"
-                            exit 0
-                        }
-                        Write-Host "⏳ Ожидание... ($waited сек), статус: $status"
-                    }
-                    Write-Host "❌ API не стал healthy за $maxWait сек"
-                    exit 1
-                '''
+            $maxWait = 180
+            $waited = 0
+            while ($waited -lt $maxWait) {
+                Start-Sleep -Seconds 5
+                $waited += 5
+                $status = docker inspect graduate-analytics --format "{{.State.Health.Status}}" 2>$null
+                if ($status -eq "healthy") {
+                    Write-Host "✅ API healthy за $waited сек"
+                    exit 0
+                }
+                Write-Host "⏳ Ожидание... ($waited сек), статус: $status"
+            }
+            Write-Host "❌ API не стал healthy за $maxWait сек"
+            exit 1
+        '''
             }
         }
-
         stage('Functional Test with Kafka') {
             when { expression { params.DEPLOY_ACTION == 'deploy' || params.DEPLOY_ACTION == 'test_only' } }
             steps {
