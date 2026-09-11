@@ -160,8 +160,15 @@ pipeline {
             Start-Sleep -Seconds 5
 
             # 4. Проверяем kafka_messages
-            $dbCheck = docker exec graduate-postgres psql -U ml_user -d ml_models -t -c "SELECT COUNT(*) FROM kafka_messages;"
-            $count = [int]$dbCheck.Trim()
+            $dbCheck = docker exec graduate-postgres psql -U ml_user -d ml_models -t -A -c "SELECT COUNT(*) FROM kafka_messages;"
+            $dbCheckStr = ($dbCheck -join '').Trim()
+            Write-Host "DB raw: '$dbCheckStr'"
+            if ([string]::IsNullOrWhiteSpace($dbCheckStr)) {
+                Write-Host "❌ Пустой ответ от psql"
+                exit 1
+            }
+            $count = [int]$dbCheckStr
+            Write-Host "Parsed count: $count"
             if ($count -lt 1) { Write-Host "❌ kafka_messages пуста — Consumer не записал"; exit 1 }
             Write-Host "✅ В kafka_messages $count записей — Consumer работает"
         '''
