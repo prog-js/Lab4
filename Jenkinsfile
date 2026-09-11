@@ -116,26 +116,39 @@ pipeline {
             steps {
                 echo '🧪 Функциональный тест с проверкой Kafka...'
                 powershell '''
-                    # 1. Токен
-                    $token = (curl.exe -s http://localhost:8000/token | ConvertFrom-Json).access_token
-                    if (-not $token) { Write-Host "❌ Не удалось получить токен"; exit 1 }
-                    Write-Host "✅ Токен получен"
+            # 1. Токен
+            $tokenResp = Invoke-RestMethod -Uri "http://localhost:8000/token" -Method Get
+            $token = $tokenResp.access_token
+            if (-not $token) { Write-Host "❌ Не удалось получить токен"; exit 1 }
+            Write-Host "✅ Токен получен"
 
-                    # 2. Predict
-                    $body = '{"features": [5.1, 3.5, 1.4, 0.2]}'
-                    $resp = curl.exe -s -X POST http://localhost:8000/predict -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d $body | ConvertFrom-Json
-                    if (-not $resp.prediction) { Write-Host "❌ Predict не вернул prediction"; exit 1 }
-                    Write-Host "✅ Prediction: $($resp.prediction) $($resp.class_name)"
+            # 2. Predict через Invoke-RestMethod
+            $headers = @{
+                "Authorization" = "Bearer $token"
+                "Content-Type" = "application/json"
+            }
+            $body = @{ features = @(5.1, 3.5, 1.4, 0.2) } | ConvertTo-Json
+            Write-Host "Body: $body"
 
-                    # 3. Ждём Consumer
-                    Start-Sleep -Seconds 5
+            try {
+                $resp = Invoke-RestMethod -Uri "http://localhost:8000/predict" -Method Post -Headers $headers -Body $body
+            } catch {
+                Write-Host "❌ Ошибка запроса: $_"
+                exit 1
+            }
 
-                    # 4. Проверяем kafka_messages
-                    $dbCheck = docker exec graduate-postgres psql -U ml_user -d ml_models -t -c "SELECT COUNT(*) FROM kafka_messages;"
-                    $count = [int]$dbCheck.Trim()
-                    if ($count -lt 1) { Write-Host "❌ kafka_messages пуста — Consumer не записал"; exit 1 }
-                    Write-Host "✅ В kafka_messages $count записей — Consumer работает"
-                '''
+            if (-not $resp.prediction) { Write-Host "❌ Predict не вернул prediction"; exit 1 }
+            Write-Host "✅ Prediction: $($resp.prediction) $($resp.class_name)"
+
+            # 3. Ждём Consumer
+            Start-Sleep -Seconds 5
+
+            # 4. Проверяем kafka_messages
+            $dbCheck = docker exec graduate-postgres psql -U ml_user -d ml_models -t -c "SELECT COUNT(*) FROM kafka_messages;"
+            $count = [int]$dbCheck.Trim()
+            if ($count -lt 1) { Write-Host "❌ kafka_messages пуста — Consumer не записал"; exit 1 }
+            Write-Host "✅ В kafka_messages $count записей — Consumer работает"
+        '''
                 echo '✅ Функциональный тест пройден'
             }
         }
